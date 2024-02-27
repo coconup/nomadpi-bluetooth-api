@@ -27,7 +27,7 @@ def deep_remove_nan(input_hash):
         for key, value in input_hash.items():
             if isinstance(value, dict) or isinstance(value, list):
                 result[key] = deep_remove_nan(value)
-            elif value == value:  # Check if value is not NaN (using the fact that NaN != NaN)
+            elif value != None and value == value:  # Check if value is not NaN (using the fact that NaN != NaN)
                 result[key] = value
         return result
     elif isinstance(input_hash, list):

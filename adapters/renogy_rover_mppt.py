@@ -1,6 +1,8 @@
 import asyncio
 from bleak import BleakClient, BleakGATTCharacteristic
+
 from utils import bytes_to_int, int_to_bytes, crc16_modbus
+from adapters.base_solar_charge_controller import BaseSolarChargeController
 
 CHARGING_STATE = {
     0: 'deactivated',
@@ -25,15 +27,14 @@ BATTERY_TYPE = {
     5: 'custom'
 }
 
-class RenogyRover:
+class RenogyRover(BaseSolarChargeController):
     UUID_RX = "0000fff1-0000-1000-8000-00805f9b34fb"
     UUID_TX = "0000ffd1-0000-1000-8000-00805f9b34fb"
 
     def __init__(self, address):
-        self.address = address
+        super().__init__(address)
         self.commands_queue = []
         self.next_command = 0
-        self.data = {}
 
     def create_generic_read_request(self, device_id, function, regAddr, readWrd):                             
         data = None                                
@@ -47,56 +48,47 @@ class RenogyRover:
         return data
 
     def parse_device_info(self, bs):
-        data = {}
-        data['model'] = (bs[3:17]).decode('utf-8').strip()
-        return data
+        self.model = (bs[3:17]).decode('utf-8').strip()
 
     def parse_device_address(self, bs):
-        data = {}
-        data['device_id'] = bytes_to_int(bs, 4, 1)
-        return data
+        self.device_address = bytes_to_int(bs, 4, 1)
 
     def parse_chargin_info(self, bs):
-        data = {
-            'battery_percentage': bytes_to_int(bs, 3, 2),
-            'battery_voltage': bytes_to_int(bs, 5, 2, scale = 0.1),
-            'battery_current': bytes_to_int(bs, 7, 2, scale = 0.01),
-            'battery_temperature': bytes_to_int(bs, 10, 1),
-            'controller_temperature': bytes_to_int(bs, 9, 1),
-            'load_status': LOAD_STATE.get(bytes_to_int(bs, 67, 1) >> 7),
-            'load_voltage': bytes_to_int(bs, 11, 2, scale = 0.1),
-            'load_current': bytes_to_int(bs, 13, 2, scale = 0.01),
-            'load_power': bytes_to_int(bs, 15, 2),
-            'pv_voltage': bytes_to_int(bs, 17, 2, scale = 0.1) ,
-            'pv_current': bytes_to_int(bs, 19, 2, scale = 0.01),
-            'pv_power': bytes_to_int(bs, 21, 2),
-            'max_charging_power_today': bytes_to_int(bs, 33, 2),
-            'max_discharging_power_today': bytes_to_int(bs, 35, 2),
-            'charging_amp_hours_today': bytes_to_int(bs, 37, 2),
-            'discharging_amp_hours_today': bytes_to_int(bs, 39, 2),
-            'power_generation_today': bytes_to_int(bs, 41, 2),
-            'power_consumption_today': bytes_to_int(bs, 43, 2),
-            'power_generation_total': bytes_to_int(bs, 59, 4),
-            'charging_status': CHARGING_STATE.get(bytes_to_int(bs, 68, 1)),
-        }
-        return data
+        self.battery_state_of_charge = bytes_to_int(bs, 3, 2)
+        self.battery_voltage = bytes_to_int(bs, 5, 2, scale = 0.1)
+        self.battery_current = bytes_to_int(bs, 7, 2, scale = 0.01)
+        self.battery_temperature = bytes_to_int(bs, 10, 1)
+        self.controller_temperature = bytes_to_int(bs, 9, 1)
+        self.load_status = LOAD_STATE.get(bytes_to_int(bs, 67, 1) >> 7)
+        self.load_voltage = bytes_to_int(bs, 11, 2, scale = 0.1)
+        self.load_current = bytes_to_int(bs, 13, 2, scale = 0.01)
+        self.load_power = bytes_to_int(bs, 15, 2)
+        self.photovoltaic_voltage = bytes_to_int(bs, 17, 2, scale = 0.1) 
+        self.photovoltaic_current = bytes_to_int(bs, 19, 2, scale = 0.01)
+        self.photovoltaic_power = bytes_to_int(bs, 21, 2)
+        # self.max_charging_power_today = bytes_to_int(bs, 33, 2)
+        # self.max_discharging_power_today = bytes_to_int(bs, 35, 2)
+        # self.charging_amp_hours_today = bytes_to_int(bs, 37, 2)
+        # self.discharging_amp_hours_today = bytes_to_int(bs, 39, 2)
+        # self.power_generation_today = bytes_to_int(bs, 41, 2)
+        # self.power_consumption_today = bytes_to_int(bs, 43, 2)
+        # self.power_generation_total = bytes_to_int(bs, 59, 4)
+        self.charging_status = CHARGING_STATE.get(bytes_to_int(bs, 68, 1))
 
     def parse_battery_type(self, bs):
-        data = {}
-        data['battery_type'] = BATTERY_TYPE.get(bytes_to_int(bs, 3, 2))
-        return data
+        self.battery_type = BATTERY_TYPE.get(bytes_to_int(bs, 3, 2))
 
     def notification_handler(self, sender: BleakGATTCharacteristic, data: bytearray):
         command = self.commands_queue[self.next_command]
         if command and (command['words'] * 2 + 5) == len(data):
             if command['command'] == 12:
-                self.data['device_info'] = self.parse_device_info(data)
+                self.parse_device_info(data)
             elif command['command'] == 26:
-                self.data['device_address'] = self.parse_device_address(data)
+                self.parse_device_address(data)
             elif command['command'] == 256:
-                self.data['metrics'] = self.parse_chargin_info(data)
+                self.parse_chargin_info(data)
             elif command['command'] == 57348:
-                self.data['battery_type'] = self.parse_battery_type(data)
+                self.parse_battery_type(data)
             self.next_command += 1
 
     def add_command(self, command, words):
@@ -114,13 +106,13 @@ class RenogyRover:
             await client.stop_notify(self.UUID_RX)
 
 async def get_info(mac_address):
-    bms = RenogyRover(mac_address)
-    bms.add_command(12, 8)
+    mppt = RenogyRover(mac_address)
+    mppt.add_command(12, 8)
     # bms.add_command(26, 1)
-    bms.add_command(256, 34)
-    bms.add_command(57348, 1)
-    await bms.execute_commands()
-    return bms.data
+    mppt.add_command(256, 34)
+    mppt.add_command(57348, 1)
+    await mppt.execute_commands()
+    return mppt.to_json()
 
 async def main():
     mac_address = '84:c6:92:13:c0:f4'

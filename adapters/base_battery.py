@@ -1,6 +1,5 @@
 class BaseBattery:
-    def __init__(self, address):
-        self.address = address
+    def __init__(self):
         self.voltage = None
         self.cells_voltage = None
         self.cells_count = None
@@ -18,7 +17,7 @@ class BaseBattery:
                 'total': self.voltage,
                 'cells': self.cells_voltage,
             },
-            'cells_count': len(self.cells_voltage or []),
+            'cells_count': self.cells_count or None,
             'current_load': self.current_load,
             'power_load': self.power_load,
             'capacity': {

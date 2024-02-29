@@ -1,6 +1,5 @@
 class BaseSolarChargeController:
-    def __init__(self, address):
-        self.address = address
+    def __init__(self):
         self.model = None
         self.charging_status = None
         self.controller_temperature = None

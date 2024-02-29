@@ -1,8 +1,8 @@
-import asyncio
-from bleak import BleakClient, BleakGATTCharacteristic
+import logging
 
 from utils import bytes_to_int, int_to_bytes, crc16_modbus
 from adapters.base_solar_charge_controller import BaseSolarChargeController
+from ble.client import Device
 
 CHARGING_STATE = {
     0: 'deactivated',
@@ -27,31 +27,50 @@ BATTERY_TYPE = {
     5: 'custom'
 }
 
-class RenogyRover(BaseSolarChargeController):
-    UUID_RX = "0000fff1-0000-1000-8000-00805f9b34fb"
-    UUID_TX = "0000ffd1-0000-1000-8000-00805f9b34fb"
+class RenogyRoverMppt(BaseSolarChargeController, Device):
+    notify_char_uuid = "0000fff1-0000-1000-8000-00805f9b34fb"
+    write_char_uuid = "0000ffd1-0000-1000-8000-00805f9b34fb"
 
-    def __init__(self, address):
-        super().__init__(address)
-        self.commands_queue = []
-        self.next_command = 0
+    commands = [
+        { 'name': 'device_info', 'command': 12, 'words': 8 },
+        { 'name': 'charging_info', 'command': 256, 'words': 34 },
+        { 'name': 'battery_type', 'command': 57348, 'words': 1 }
+    ]
 
-    def create_generic_read_request(self, device_id, function, regAddr, readWrd):                             
+    def __init__(self, mac_address):
+        BaseSolarChargeController.__init__(self)
+        Device.__init__(
+            self,
+            mac_address=mac_address,
+            notify_uuid=self.notify_char_uuid,
+            write_uuid=self.write_char_uuid
+        )
+
+    def renogy_command(self, command, words):                             
         data = None                                
-        if regAddr != None and readWrd != None:
-            data = []
-            data.append(device_id)
-            data.append(function)
-            data += int_to_bytes(regAddr)
-            data += int_to_bytes(readWrd)
+        if command != None and words != None:
+            data = [255, 3]
+            data += int_to_bytes(command)
+            data += int_to_bytes(words)
             data += crc16_modbus(bytes(data))
         return data
 
+    def execute(self, commands):
+        parsed_commands = [self.renogy_command(cmd['command'], cmd['words']) for cmd in commands]
+        super().execute(parsed_commands)
+
+    def parse_result(self):
+        for result in self.data:
+            command = next((cmd for cmd in self.commands if cmd['words'] * 2 + 5 == len(result)), None)
+            if command['name'] == 'device_info':
+                self.parse_device_info(result)
+            elif command['name'] == 'charging_info':
+                self.parse_chargin_info(result)
+            elif command['name'] == 'battery_type':
+                self.parse_battery_type(result)
+
     def parse_device_info(self, bs):
         self.model = (bs[3:17]).decode('utf-8').strip()
-
-    def parse_device_address(self, bs):
-        self.device_address = bytes_to_int(bs, 4, 1)
 
     def parse_chargin_info(self, bs):
         self.battery_state_of_charge = bytes_to_int(bs, 3, 2)
@@ -78,46 +97,16 @@ class RenogyRover(BaseSolarChargeController):
     def parse_battery_type(self, bs):
         self.battery_type = BATTERY_TYPE.get(bytes_to_int(bs, 3, 2))
 
-    def notification_handler(self, sender: BleakGATTCharacteristic, data: bytearray):
-        command = self.commands_queue[self.next_command]
-        if command and (command['words'] * 2 + 5) == len(data):
-            if command['command'] == 12:
-                self.parse_device_info(data)
-            elif command['command'] == 26:
-                self.parse_device_address(data)
-            elif command['command'] == 256:
-                self.parse_chargin_info(data)
-            elif command['command'] == 57348:
-                self.parse_battery_type(data)
-            self.next_command += 1
-
-    def add_command(self, command, words):
-        self.commands_queue.append(dict(command=command, words=words))
-
-    async def execute_commands(self):
-        async with BleakClient(self.address) as client:
-            await client.start_notify(self.UUID_RX, self.notification_handler)
-
-            for item in self.commands_queue:
-                request = self.create_generic_read_request(255, 3, item['command'], item['words']) 
-                await client.write_gatt_char(self.UUID_TX, request)
-    
-            await asyncio.sleep(1)
-            await client.stop_notify(self.UUID_RX)
-
-async def get_info(mac_address):
-    mppt = RenogyRover(mac_address)
-    mppt.add_command(12, 8)
-    # bms.add_command(26, 1)
-    mppt.add_command(256, 34)
-    mppt.add_command(57348, 1)
-    await mppt.execute_commands()
+def get_info(mac_address):
+    mppt = RenogyRoverMppt(mac_address)
+    mppt.execute(mppt.commands)
+    mppt.parse_result()
     return mppt.to_json()
 
-async def main():
+def main():
     mac_address = '84:c6:92:13:c0:f4'
-    data = await get_info(mac_address)
+    data = get_info(mac_address)
     print(data)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()

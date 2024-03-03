@@ -152,8 +152,7 @@ class DeviceClient(gatt.Device):
         # if self.connect_fail_callback:
         #     self.connect_fail_callback(error)
 
-        os.exit(os.EX_OK)
-        
+        os._exit(os.EX_OK)
 
     def disconnect_succeeded(self):
         super().disconnect_succeeded()

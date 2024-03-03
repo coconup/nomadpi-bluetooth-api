@@ -1,3 +1,4 @@
+import threading
 import logging
 import json
 import math
@@ -9,6 +10,10 @@ from utils import deep_remove_nan
 from adapters.renogy_rover_mppt import get_info as get_renogy_rover_info
 from adapters.jbd_bms import get_info as get_jbd_info
 
+lock = threading.Lock()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 async def get_info(request):
     try:
         mac_address = request.query.get('mac_address')
@@ -18,10 +23,11 @@ async def get_info(request):
             return web.json_response({"success": False, "error": "`mac_address` and `adapter` are required"}, status=400)
 
         device_data = {}
-        if adapter == 'renogy_rover':
-            device_data = await get_renogy_rover_info(mac_address)
-        elif adapter == 'jbd':
-            device_data = await get_jbd_info(mac_address)
+        with lock:
+            if adapter == 'renogy_rover':
+                device_data = await get_renogy_rover_info(mac_address)
+            elif adapter == 'jbd':
+                device_data = await get_jbd_info(mac_address)
 
         result = deep_remove_nan(device_data)
 
@@ -34,5 +40,5 @@ app = web.Application()
 app.router.add_get('/device_data', get_info)
 
 if __name__ == '__main__':
-    logging.info('starting server')
+    logger.info('Starting server...')
     web.run_app(app, port=5007)
